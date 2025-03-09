@@ -13,30 +13,25 @@ bytes: []const u8,
 char_map: CharMap,
 index_to_loc_format: enum { short, long },
 pub fn parse(bytes: []const u8) !Font {
-    var offset: usize = 0;
     var font: Font = .{
         .table_offsets = @splat(0),
         .table_lengths = @splat(0),
-        .scalar_type = @enumFromInt(std.mem.readInt(u32, bytes[0..4], .big)),
+        .scalar_type = undefined,
         .bytes = bytes,
         .char_map = undefined,
         .index_to_loc_format = undefined,
     };
-    offset += 4;
-    const num_tables = std.mem.readInt(u16, bytes[offset..][0..2], .big);
-    offset += 2;
-    offset += 6; // searchRange, entrySelector, rangeShift
+    var reader = font.fontReader(0);
+    font.scalar_type = @enumFromInt(reader.read(u32));
+    const num_tables = reader.read(u16);
+    reader.skip(6); // searchRange, entrySelector, rangeShift
     std.debug.print("{}\n", .{num_tables});
     for (0..num_tables) |_| {
-        const tag_int = std.mem.readInt(u32, bytes[offset..][0..4], native_endian);
-        std.debug.print("{s}\n", .{bytes[offset..][0..4]});
-        offset += 4;
-        const check_sum = std.mem.readInt(u32, bytes[offset..][0..4], .big);
-        offset += 4;
-        const table_offset = std.mem.readInt(u32, bytes[offset..][0..4], .big);
-        offset += 4;
-        const table_length = std.mem.readInt(u32, bytes[offset..][0..4], .big);
-        offset += 4;
+        std.debug.print("{s}\n", .{bytes[reader.offset..][0..4]});
+        const tag_int = std.mem.bigToNative(u32, reader.read(u32));
+        const check_sum = reader.read(u32);
+        const table_offset = reader.read(u32);
+        const table_length = reader.read(u32);
 
         const tag: TableIndex = switch (tag_int) {
             TableIndex.head.toTag() => .head,
@@ -54,26 +49,62 @@ pub fn parse(bytes: []const u8) !Font {
     return font;
 }
 
-fn parseHead(font: *const Font) i16 {
-    var offset = font.table_offsets[@intFromEnum(TableIndex.head)];
-    offset += 2; // major version
-    offset += 2; // minor version
-    offset += 4; // font revision
-    offset += 4; // checksum adjustment
-    offset += 4; // magic number
-    offset += 2; // flags
-    offset += 2; // units per em
-    offset += 8; // created
-    offset += 8; // modified
-    offset += 2; // x min
-    offset += 2; // y min
-    offset += 2; // x max
-    offset += 2; // y max
-    offset += 2; // mac style
-    offset += 2; // lowest rec PPEM
-    offset += 2; // font direction hint
-    return std.mem.readInt(i16, font.bytes[offset..][0..2], .big);
+fn fontReader(font: *const Font, offset: u32) FontReader {
+    return .{
+        .bytes = font.bytes,
+        .offset = offset,
+    };
 }
+
+fn tableReader(font: *const Font, table: TableIndex) FontReader {
+    return .{
+        .bytes = font.bytes,
+        .offset = font.table_offsets[@intFromEnum(table)],
+    };
+}
+
+const FontReader = struct {
+    bytes: []const u8,
+    offset: u32,
+    fn read(reader: *FontReader, T: type) T {
+        const bytes = @divExact(@typeInfo(T).int.bits, 8);
+        const val: T = @bitCast(reader.bytes[reader.offset..][0..bytes].*);
+        reader.offset += bytes;
+        return std.mem.bigToNative(T, val);
+    }
+    fn readFrom(reader: *FontReader, T: type, offset: u32) T {
+        reader.skip(offset);
+        return reader.read(T);
+    }
+    fn skip(reader: *FontReader, offset: u32) void {
+        reader.offset += offset;
+    }
+    fn reset(reader: *FontReader, offset: u32) void {
+        reader.offset = offset;
+    }
+};
+
+fn parseHead(font: *const Font) i16 {
+    var reader = font.tableReader(.head);
+    reader.skip(2); // major version
+    reader.skip(2); // minor version
+    reader.skip(4); // font revision
+    reader.skip(4); // checksum adjustment
+    reader.skip(4); // magic number
+    reader.skip(2); // flags
+    reader.skip(2); // units per em
+    reader.skip(8); // created
+    reader.skip(8); // modified
+    reader.skip(2); // x min
+    reader.skip(2); // y min
+    reader.skip(2); // x max
+    reader.skip(2); // y max
+    reader.skip(2); // mac style
+    reader.skip(2); // lowest rec PPEM
+    reader.skip(2); // font direction hint
+    return reader.read(i16);
+}
+
 const CMapSubtable = packed struct {
     platform_id: u16,
     platform_specific_id: u16,
@@ -81,20 +112,17 @@ const CMapSubtable = packed struct {
 };
 fn parseCmap(font: *const Font) !CharMap {
     const cmap_offset = font.table_offsets[@intFromEnum(TableIndex.cmap)];
-    var offset = cmap_offset;
-    _ = std.mem.readInt(u16, font.bytes[offset..][0..2], .big);
-    offset += 2;
-    const num_subtables = std.mem.readInt(u16, font.bytes[offset..][0..2], .big);
-    offset += 2;
+    var reader = font.fontReader(cmap_offset);
+    reader.skip(2);
+    const num_subtables = reader.read(u16);
     var prefered_subtable: ?CMapSubtable = null;
     const preference = [_]u16{ 4, 1, 0, 3, 5, 6 };
     for (0..num_subtables) |_| {
         const subtable: CMapSubtable = .{
-            .platform_id = std.mem.readInt(u16, font.bytes[offset..][0..2], .big),
-            .platform_specific_id = std.mem.readInt(u16, font.bytes[offset + 2 ..][0..2], .big),
-            .offset = std.mem.readInt(u32, font.bytes[offset + 4 ..][0..4], .big),
+            .platform_id = reader.read(u16),
+            .platform_specific_id = reader.read(u16),
+            .offset = reader.read(u32),
         };
-        offset += 8;
         if (subtable.platform_id > 0) continue;
         const index = std.mem.indexOfScalar(u16, &preference, subtable.platform_specific_id) orelse continue;
         if (prefered_subtable) |prefered| {
@@ -106,13 +134,12 @@ fn parseCmap(font: *const Font) !CharMap {
             prefered_subtable = subtable;
         }
     }
-    offset = cmap_offset + (prefered_subtable orelse return error.NoSuitableCmap).offset;
-    const format = std.mem.readInt(u16, font.bytes[offset..][0..2], .big);
-    offset += 2;
-    const start = offset;
+    reader.reset(cmap_offset);
+    reader.skip((prefered_subtable orelse return error.NoSuitableCmap).offset);
+    const format = reader.read(u16);
     return .{
         .format = format,
-        .start = start,
+        .start = reader.offset,
     };
 }
 
@@ -155,47 +182,39 @@ const Coord = struct {
     y: i32,
 };
 pub fn indexToLoc(font: *const Font, index: u32) u32 {
-    const offset = font.table_offsets[@intFromEnum(TableIndex.loca)];
+    var reader = font.tableReader(.loca);
     return switch (font.index_to_loc_format) {
-        .short => std.mem.readInt(u16, font.bytes[offset + index * 2 ..][0..2], .big) * 2,
-        .long => std.mem.readInt(u32, font.bytes[offset + index * 4 ..][0..4], .big),
+        .short => reader.readFrom(u16, index * 2) * 2,
+        .long => reader.readFrom(u32, index * 4),
     };
 }
 pub fn renderGlyph(font: *const Font, alloc: std.mem.Allocator, index: u32) !Glyph {
-    var offset = font.table_offsets[@intFromEnum(TableIndex.glyf)] + font.indexToLoc(index);
-    const contours = std.mem.readInt(i16, font.bytes[offset..][0..2], .big);
-    offset += 2;
-    const x_min = std.mem.readInt(i16, font.bytes[offset..][0..2], .big);
-    offset += 2;
-    const y_min = std.mem.readInt(i16, font.bytes[offset..][0..2], .big);
-    offset += 2;
-    const x_max = std.mem.readInt(i16, font.bytes[offset..][0..2], .big);
-    offset += 2;
-    const y_max = std.mem.readInt(i16, font.bytes[offset..][0..2], .big);
-    offset += 2;
+    var reader = font.tableReader(.glyf);
+    reader.skip(font.indexToLoc(index));
+    const contours = reader.read(i16);
+    const x_min = reader.read(i16);
+    const y_min = reader.read(i16);
+    const x_max = reader.read(i16);
+    const y_max = reader.read(i16);
     const combined = contours == -1;
     if (combined) @panic("todo");
     const end_points = try alloc.alloc(u16, @intCast(contours));
     defer alloc.free(end_points);
     for (end_points) |*point| {
-        point.* = std.mem.readInt(u16, font.bytes[offset..][0..2], .big);
-        offset += 2;
+        point.* = reader.read(u16);
     }
-    const instruction_length = std.mem.readInt(u16, font.bytes[offset..][0..2], .big);
-    offset += 2;
-    offset += instruction_length; // instructions
+    const instruction_length = reader.read(u16);
+    reader.skip(instruction_length); // instructions
     const num_coords = end_points[end_points.len - 1] + 1;
     var flags = try alloc.alloc(CoordFlag, num_coords);
     defer alloc.free(flags);
     var i: usize = 0;
     while (i < num_coords) {
-        const coord: CoordFlag = @bitCast(std.mem.readInt(u8, font.bytes[offset..][0..1], .big));
-        offset += 1;
+        const coord: CoordFlag = @bitCast(reader.read(u8));
         flags[i] = coord;
         i += 1;
         if (coord.repeat) {
-            const repeat = std.mem.readInt(u8, font.bytes[offset..][0..1], .big);
-            offset += 1;
+            const repeat = reader.read(u8);
             @memset(flags[i..][0..repeat], coord);
             i += repeat;
         }
@@ -205,14 +224,12 @@ pub fn renderGlyph(font: *const Font, alloc: std.mem.Allocator, index: u32) !Gly
     var x: i32 = 0;
     for (flags, 0..) |flag, idx| {
         if (flag.x_short) {
-            const coord = std.mem.readInt(u8, font.bytes[offset..][0..1], .big);
-            offset += 1;
+            const coord = reader.read(u8);
             x += coord * flag.xSign();
             coords[idx].x = x;
         } else {
             if (!flag.x_same_or_positive) {
-                const coord = std.mem.readInt(i16, font.bytes[offset..][0..2], .big);
-                offset += 2;
+                const coord = reader.read(i16);
                 x += coord;
             }
             coords[idx].x = x;
@@ -221,14 +238,12 @@ pub fn renderGlyph(font: *const Font, alloc: std.mem.Allocator, index: u32) !Gly
     var y: i32 = 0;
     for (flags, 0..) |flag, idx| {
         if (flag.y_short) {
-            const coord = std.mem.readInt(u8, font.bytes[offset..][0..1], .big);
-            offset += 1;
+            const coord = reader.read(u8);
             y += coord * flag.ySign();
             coords[idx].y = y;
         } else {
             if (!flag.y_same_or_positive) {
-                const coord = std.mem.readInt(i16, font.bytes[offset..][0..2], .big);
-                offset += 2;
+                const coord = reader.read(i16);
                 y += coord;
             }
             coords[idx].y = y;
@@ -254,19 +269,15 @@ pub fn renderGlyph(font: *const Font, alloc: std.mem.Allocator, index: u32) !Gly
     };
 }
 pub fn charToGlyph(font: *const Font, codepoint: u21) u32 {
-    var offset = font.char_map.start;
+    var reader = font.fontReader(font.char_map.start);
     switch (font.char_map.format) {
         12 => {
-            offset += 2 + 4 + 4; // reserved, length, language
-            const groups = std.mem.readInt(u32, font.bytes[offset..][0..4], .big);
-            offset += 4;
+            reader.skip(2 + 4 + 4); // reserved, length, language
+            const groups = reader.read(u32);
             for (0..groups) |_| {
-                const start_char = std.mem.readInt(u32, font.bytes[offset..][0..4], .big);
-                offset += 4;
-                const end_char = std.mem.readInt(u32, font.bytes[offset..][0..4], .big);
-                offset += 4;
-                const start_glyph = std.mem.readInt(u32, font.bytes[offset..][0..4], .big);
-                offset += 4;
+                const start_char = reader.read(u32);
+                const end_char = reader.read(u32);
+                const start_glyph = reader.read(u32);
                 if (codepoint >= start_char and codepoint <= end_char) {
                     return start_glyph + codepoint - start_char;
                 }
