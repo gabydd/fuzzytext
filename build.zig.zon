@@ -1,0 +1,16 @@
+.{
+    .name = .fuzzytext,
+    .version = "0.0.0",
+    .dependencies = .{
+        .shimizu = .{
+            .url = "git+https://codeberg.org/klaji/shimizu.git#c3f8e47f16cf9d58445cba2c2c12f6fec7910ee5",
+            .hash = "shimizu-0.0.0-irfMUR3QAgDrwGeQ6vGSYsnZDi4Faw1WJMrz4eLGtWv3",
+        },
+    },
+    .fingerprint = 0x216c28d384262ae5,
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
