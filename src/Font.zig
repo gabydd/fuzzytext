@@ -170,12 +170,6 @@ const CoordFlag = packed struct {
     fn ySign(flag: CoordFlag) i16 {
         return if (flag.y_short and flag.y_same_or_positive) 1 else -1;
     }
-    fn xPrev(flag: CoordFlag) bool {
-        return !flag.x_short and flag.x_same_or_positive;
-    }
-    fn yPrev(flag: CoordFlag) bool {
-        return !flag.y_short and flag.y_same_or_positive;
-    }
 };
 const Coord = struct {
     x: i32,
@@ -188,7 +182,19 @@ pub fn indexToLoc(font: *const Font, index: u32) u32 {
         .long => reader.readFrom(u32, index * 4),
     };
 }
-pub fn renderGlyph(font: *const Font, alloc: std.mem.Allocator, index: u32) !Glyph {
+
+pub const GlyphData = struct {
+    x_min: i16,
+    y_min: i16,
+    x_max: i16,
+    y_max: i16,
+    coords: []Coord,
+    flags: []CoordFlag,
+    end_points: []u16,
+};
+
+// TODO: return iterators so to make it zero alloc
+pub fn glyphData(font: *const Font, alloc: std.mem.Allocator, index: u32) !GlyphData {
     var reader = font.tableReader(.glyf);
     reader.skip(font.indexToLoc(index));
     const contours = reader.read(i16);
@@ -199,7 +205,6 @@ pub fn renderGlyph(font: *const Font, alloc: std.mem.Allocator, index: u32) !Gly
     const combined = contours == -1;
     if (combined) @panic("todo");
     const end_points = try alloc.alloc(u16, @intCast(contours));
-    defer alloc.free(end_points);
     for (end_points) |*point| {
         point.* = reader.read(u16);
     }
@@ -207,7 +212,6 @@ pub fn renderGlyph(font: *const Font, alloc: std.mem.Allocator, index: u32) !Gly
     reader.skip(instruction_length); // instructions
     const num_coords = end_points[end_points.len - 1] + 1;
     var flags = try alloc.alloc(CoordFlag, num_coords);
-    defer alloc.free(flags);
     var i: usize = 0;
     while (i < num_coords) {
         const coord: CoordFlag = @bitCast(reader.read(u8));
@@ -220,7 +224,6 @@ pub fn renderGlyph(font: *const Font, alloc: std.mem.Allocator, index: u32) !Gly
         }
     }
     var coords = try alloc.alloc(Coord, num_coords);
-    defer alloc.free(coords);
     var x: i32 = 0;
     for (flags, 0..) |flag, idx| {
         if (flag.x_short) {
@@ -249,13 +252,28 @@ pub fn renderGlyph(font: *const Font, alloc: std.mem.Allocator, index: u32) !Gly
             coords[idx].y = y;
         }
     }
-    const height: u32 = @intCast(y_max - y_min + 48);
-    const width: u32 = @intCast(x_max - x_min + 48);
+    return .{
+        .y_max = y_max,
+        .y_min = y_min,
+        .x_max = x_max,
+        .x_min = x_min,
+        .flags = flags,
+        .coords = coords,
+        .end_points = end_points,
+    };
+}
+pub fn renderGlyph(font: *const Font, alloc: std.mem.Allocator, index: u32) !Glyph {
+    const data = try font.glyphData(alloc, index);
+    alloc.free(data.flags);
+    alloc.free(data.end_points);
+    defer alloc.free(data.coords);
+    const height: u32 = @intCast(data.y_max - data.y_min + 48);
+    const width: u32 = @intCast(data.x_max - data.x_min + 48);
     const bitmap = try alloc.alloc([4]u8, width * height);
     @memset(bitmap, .{ 0, 0, 0, 0xFF });
-    for (coords) |coord| {
-        const cx: u32 = @intCast(coord.x - x_min + 24);
-        const cy: u32 = @intCast(coord.y - y_min + 24);
+    for (data.coords) |coord| {
+        const cx: u32 = @intCast(coord.x - data.x_min + 24);
+        const cy: u32 = @intCast(coord.y - data.y_min + 24);
         for (0..16) |xs| {
             for (0..16) |ys| {
                 bitmap[std.math.clamp(cy + ys -% 8, 0, height - 1) * width + std.math.clamp(cx + xs -% 8, 0, width - 1)] = @splat(0xFF);
@@ -268,6 +286,7 @@ pub fn renderGlyph(font: *const Font, alloc: std.mem.Allocator, index: u32) !Gly
         .bitmap = bitmap,
     };
 }
+
 pub fn charToGlyph(font: *const Font, codepoint: u21) u32 {
     var reader = font.fontReader(font.char_map.start);
     switch (font.char_map.format) {
