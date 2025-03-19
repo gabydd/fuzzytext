@@ -148,12 +148,14 @@ const BezierIterator = struct {
     idx: u16,
     last: ?GlyphPart,
     first: ?GlyphPart,
+    first_mid: ?GlyphPart,
     fn init(glyph: *const Glyph, font: *const Font) BezierIterator {
         return .{
             .glyph = .init(glyph, font),
             .idx = 0,
             .last = null,
             .first = null,
+            .first_mid = null,
         };
     }
     fn next(it: *BezierIterator, font: *const Font) ?Bezier {
@@ -161,16 +163,36 @@ const BezierIterator = struct {
         if (it.first == null) it.first = it.last;
 
         const start = it.last orelse return null;
-        std.debug.assert(start.on_curve);
+        if (!start.on_curve) {
+            it.first_mid = start;
+            var peek = it.glyph;
+            const end = peek.next(font) orelse return null;
+            if (end.on_curve) {
+                _ = it.glyph.next(font);
+                it.last = end;
+            } else {
+                it.last = .{
+                    .x = @divTrunc((start.x + end.x), 2),
+                    .y = @divTrunc((start.y + end.y), 2),
+                    .on_curve = true,
+                    .contour = it.glyph.contour,
+                };
+            }
+            it.first = it.last;
+            return it.next(font);
+        }
         const middle_maybe = it.glyph.next(font);
         defer if (middle_maybe == null) {
             it.last = null;
         };
 
         const middle = middle_maybe orelse it.first orelse return null;
-        if (start.contour != it.glyph.contour) {
+        if (start.contour != it.glyph.contour or middle_maybe == null) {
             it.last = middle;
             defer it.first = middle;
+            if (it.first_mid) |mid| {
+                return .{ .p0 = .{ start.x, start.y }, .p1 = .{ mid.x, mid.y }, .p2 = .{ it.first.?.x, it.first.?.y } };
+            }
             return .fromLine(.{ start.x, start.y }, .{ it.first.?.x, it.first.?.y });
         }
         if (middle.on_curve) {
@@ -221,20 +243,24 @@ pub fn renderGlyph(glyph: *const Glyph, font: *const Font, alloc: std.mem.Alloca
     const bitmap = try alloc.alloc([4]u8, width * height);
     @memset(bitmap, .{ 0, 0, 0, 0xFF });
     var it = glyph.iter(font);
+    var render: RenderedGlyph = .{
+        .height = height,
+        .width = width,
+        .bitmap = bitmap,
+    };
+    var first = true;
     while (it.next(font)) |coord| {
         const cx: u32 = @intCast(coord.x - glyph.x_min + 24);
         const cy: u32 = @intCast(coord.y - glyph.y_min + 24);
         for (0..16) |xs| {
             for (0..16) |ys| {
-                bitmap[std.math.clamp(cy + ys -% 8, 0, height - 1) * width + std.math.clamp(cx + xs -% 8, 0, width - 1)] = if (coord.on_curve) @splat(0xFF) else .{ 0xFF, 0x00, 0x00, 0xFF };
+                render.put(cx + xs -% 8, cy + ys -% 8, if (coord.on_curve) @splat(0xFF) else .{ 0xFF, 0x00, 0x00, 0xFF });
+                if (first) render.put(cx + xs -% 8, cy + ys -% 8, .{ 0xFF, 0xFF, 0x00, 0x00 });
             }
         }
+        first = false;
     }
-    return .{
-        .height = height,
-        .width = width,
-        .bitmap = bitmap,
-    };
+    return render;
 }
 
 pub fn renderOutline(glyph: *const Glyph, font: *const Font, alloc: std.mem.Allocator) !RenderedGlyph {
