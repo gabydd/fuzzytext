@@ -104,8 +104,8 @@ pub fn run(font: *const Font) !void {
     const memory = try std.posix.mmap(null, frambuffer_byte_size, std.posix.PROT.WRITE, .{ .TYPE = .SHARED }, fd, 0);
     const pixels: []Pixel = std.mem.bytesAsSlice(Pixel, memory);
     @memset(pixels, OPAQUE_BLACK);
-    const glyph = font.glyphData(font.charToGlyph('8'));
-    const render = try glyph.renderGlyph(font, alloc);
+    const glyph = font.glyphData(font.charToGlyph('D'));
+    const render = try glyph.renderOutline(font, alloc);
     defer alloc.free(render.bitmap);
     for (0..render.height) |i| {
         @memcpy(pixels[(i + 24) * state.width ..][24 .. render.width + 24], render.bitmap[i * render.width ..][0..render.width]);

@@ -49,9 +49,15 @@ const GlyphIterator = struct {
             .y_coords_offset = data.y_coords_start,
         };
     }
+
+    pub fn done(it: *GlyphIterator) bool {
+        return it.idx >= it.data.num_coords;
+    }
+
     pub fn next(it: *GlyphIterator, font: *const Font) ?GlyphPart {
-        if (it.idx >= it.data.num_coords) return null;
-        if (it.idx == it.end_point) {
+        if (it.done()) return null;
+
+        if (it.idx > it.end_point) {
             it.contour += 1;
             var reader = font.fontReader(it.data.end_points_start);
             it.end_point = reader.readFrom(u16, it.contour * 2);
@@ -108,6 +114,78 @@ const GlyphIterator = struct {
     }
 };
 
+const Coord = @Vector(2, i32);
+const Bezier = struct {
+    p0: Coord,
+    p1: Coord,
+    p2: Coord,
+    fn fromLine(p0: Coord, p2: Coord) Bezier {
+        return .{
+            .p0 = p0,
+            .p1 = (p0 + p2) / @as(Coord, @splat(2)),
+            .p2 = p2,
+        };
+    }
+};
+const BezierIterator = struct {
+    glyph: GlyphIterator,
+    idx: u16,
+    last: ?GlyphPart,
+    first: ?GlyphPart,
+    fn init(glyph: *const Glyph, font: *const Font) BezierIterator {
+        return .{
+            .glyph = .init(glyph, font),
+            .idx = 0,
+            .last = null,
+            .first = null,
+        };
+    }
+    fn next(it: *BezierIterator, font: *const Font) ?Bezier {
+        if (it.last == null) it.last = it.glyph.next(font);
+        if (it.first == null) it.first = it.last;
+
+        const start = it.last orelse return null;
+        std.debug.assert(start.on_curve);
+        const middle_maybe = it.glyph.next(font);
+        defer if (middle_maybe == null) {
+            it.last = null;
+        };
+
+        const middle = middle_maybe orelse it.first orelse return null;
+        if (start.contour != it.glyph.contour) {
+            it.last = middle;
+            defer it.first = middle;
+            return .fromLine(.{ start.x, start.y }, .{ it.first.?.x, it.first.?.y });
+        }
+        if (middle.on_curve) {
+            it.last = middle;
+            return .fromLine(.{ start.x, start.y }, .{ middle.x, middle.y });
+        }
+        var peek = it.glyph;
+        const end = peek.next(font) orelse return null;
+        if (start.contour != peek.contour) {
+            _ = it.glyph.next(font);
+            it.last = end;
+            defer it.first = end;
+            return .{ .p0 = .{ start.x, start.y }, .p1 = .{ middle.x, middle.y }, .p2 = .{ it.first.?.x, it.first.?.y } };
+        }
+
+        if (end.on_curve) {
+            _ = it.glyph.next(font);
+            it.last = end;
+            return .{ .p0 = .{ start.x, start.y }, .p1 = .{ middle.x, middle.y }, .p2 = .{ end.x, end.y } };
+        }
+
+        it.last = .{
+            .x = @divTrunc((middle.x + end.x), 2),
+            .y = @divTrunc((middle.y + end.y), 2),
+            .on_curve = true,
+            .contour = it.glyph.contour,
+        };
+        return .{ .p0 = .{ start.x, start.y }, .p1 = .{ middle.x, middle.y }, .p2 = .{ it.last.?.x, it.last.?.y } };
+    }
+};
+
 pub const RenderedGlyph = struct {
     bitmap: []const [4]u8,
     width: u32,
@@ -125,7 +203,43 @@ pub fn renderGlyph(glyph: *const Glyph, font: *const Font, alloc: std.mem.Alloca
         const cy: u32 = @intCast(coord.y - glyph.y_min + 24);
         for (0..16) |xs| {
             for (0..16) |ys| {
-                bitmap[std.math.clamp(cy + ys -% 8, 0, height - 1) * width + std.math.clamp(cx + xs -% 8, 0, width - 1)] = @splat(0xFF);
+                bitmap[std.math.clamp(cy + ys -% 8, 0, height - 1) * width + std.math.clamp(cx + xs -% 8, 0, width - 1)] = if (coord.on_curve) @splat(0xFF) else .{ 0xFF, 0x00, 0x00, 0xFF };
+            }
+        }
+    }
+    return .{
+        .height = height,
+        .width = width,
+        .bitmap = bitmap,
+    };
+}
+
+pub fn renderOutline(glyph: *const Glyph, font: *const Font, alloc: std.mem.Allocator) !RenderedGlyph {
+    const height: u32 = @intCast(glyph.y_max - glyph.y_min + 48);
+    const width: u32 = @intCast(glyph.x_max - glyph.x_min + 48);
+    const bitmap = try alloc.alloc([4]u8, width * height);
+    @memset(bitmap, .{ 0, 0, 0, 0xFF });
+    var it: BezierIterator = .init(glyph, font);
+    while (it.next(font)) |bezier| {
+        const cx0: u32 = @intCast(bezier.p0[0] - glyph.x_min + 24);
+        const cy0: u32 = @intCast(bezier.p0[1] - glyph.y_min + 24);
+        for (0..16) |xs| {
+            for (0..16) |ys| {
+                bitmap[std.math.clamp(cy0 + ys -% 8, 0, height - 1) * width + std.math.clamp(cx0 + xs -% 8, 0, width - 1)] = @splat(0xFF);
+            }
+        }
+        const cx1: u32 = @intCast(bezier.p1[0] - glyph.x_min + 24);
+        const cy1: u32 = @intCast(bezier.p1[1] - glyph.y_min + 24);
+        for (0..16) |xs| {
+            for (0..16) |ys| {
+                bitmap[std.math.clamp(cy1 + ys -% 8, 0, height - 1) * width + std.math.clamp(cx1 + xs -% 8, 0, width - 1)] = .{ 0xFF, 0x00, 0x00, 0xFF };
+            }
+        }
+        const cx2: u32 = @intCast(bezier.p2[0] - glyph.x_min + 24);
+        const cy2: u32 = @intCast(bezier.p2[1] - glyph.y_min + 24);
+        for (0..16) |xs| {
+            for (0..16) |ys| {
+                bitmap[std.math.clamp(cy2 + ys -% 8, 0, height - 1) * width + std.math.clamp(cx2 + xs -% 8, 0, width - 1)] = @splat(0xFF);
             }
         }
     }
