@@ -230,6 +230,44 @@ pub fn glyphData(font: *const Font, index: u32) Glyph {
 pub fn charToGlyph(font: *const Font, codepoint: u21) u32 {
     var reader = font.fontReader(font.char_map.start);
     switch (font.char_map.format) {
+        4 => {
+            reader.skip(2 + 2); // length, language
+            const seg_count = reader.read(u16) / 2;
+            _ = reader.read(u16);
+            _ = reader.read(u16);
+            _ = reader.read(u16);
+            var i: u32 = 0;
+            while (i < seg_count) : (i += 1) {
+                const end_code = reader.read(u16);
+                if (codepoint <= end_code) {
+                    break;
+                }
+            }
+            reader.skip((seg_count - i - 1) * 2);
+
+            reader.skip(2); // reserved pad
+
+            const start_code = reader.readFrom(u16, 2 * i);
+            reader.skip((seg_count - i - 1) * 2);
+
+            const id_delta = reader.readFrom(i16, 2 * i);
+            reader.skip((seg_count - i - 1) * 2);
+
+            const id_range_offset = reader.readFrom(u16, 2 * i);
+
+            if (id_range_offset == 0) {
+                const glyph_index: i32 = @as(i32, @intCast(codepoint)) + id_delta;
+                const unsigned: u32 = @intCast(if (glyph_index < 0) glyph_index + 65536 else glyph_index);
+                return unsigned % 65536;
+            }
+            // subtract 2 bytes because its an offset from the id_range_offset
+            const glyph_index: i32 = reader.readFrom(u16, id_range_offset + (codepoint - start_code) * 2 - 2);
+            if (glyph_index == 0) return 0;
+
+            const signed = glyph_index + id_delta;
+            const unsigned: u32 = @intCast(if (signed < 0) signed + 65536 else signed);
+            return unsigned % 65536;
+        },
         12 => {
             reader.skip(2 + 4 + 4); // reserved, length, language
             const groups = reader.read(u32);

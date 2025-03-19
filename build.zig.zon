@@ -3,8 +3,8 @@
     .version = "0.0.0",
     .dependencies = .{
         .shimizu = .{
-            .url = "git+https://codeberg.org/klaji/shimizu.git#c3f8e47f16cf9d58445cba2c2c12f6fec7910ee5",
-            .hash = "shimizu-0.0.0-irfMUR3QAgDrwGeQ6vGSYsnZDi4Faw1WJMrz4eLGtWv3",
+            .url = "https://codeberg.org/klaji/shimizu/archive/731c1fa2e848fab4c3831859d4e39f4b9ee773d8.tar.gz",
+            .hash = "shimizu-0.0.0-irfMUfDaAgD9qU_8OTFR1V2EiDHggvpSoYyTMAj_ZlNO",
         },
     },
     .fingerprint = 0x216c28d384262ae5,

@@ -2,7 +2,7 @@ const std = @import("std");
 const fuzzy = @import("fuzzytext");
 const Font = fuzzy.Font;
 
-const file = @embedFile("res/JetBrainsMonoNoNF-Regular.ttf");
+const file = @embedFile("res/Inconsolata-Regular.ttf");
 pub fn main() !void {
     var gpa: std.heap.DebugAllocator(.{}) = .{};
     defer _ = gpa.deinit();
@@ -104,11 +104,11 @@ pub fn run(font: *const Font) !void {
     const memory = try std.posix.mmap(null, frambuffer_byte_size, std.posix.PROT.WRITE, .{ .TYPE = .SHARED }, fd, 0);
     const pixels: []Pixel = std.mem.bytesAsSlice(Pixel, memory);
     @memset(pixels, OPAQUE_BLACK);
-    const glyph = font.glyphData(font.charToGlyph('a'));
+    const glyph = font.glyphData(font.charToGlyph('}'));
     const render = try glyph.renderOutline(font, alloc);
     defer alloc.free(render.bitmap);
     for (0..render.height) |i| {
-        @memcpy(pixels[(i + 24) * state.width ..][24 .. render.width + 24], render.bitmap[i * render.width ..][0..render.width]);
+        @memcpy(pixels[i * state.width ..][0..render.width], render.bitmap[i * render.width ..][0..render.width]);
     }
 
     // create a Wayland shared memory pool

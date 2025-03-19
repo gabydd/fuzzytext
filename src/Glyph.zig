@@ -124,7 +124,7 @@ const Bezier = struct {
     fn fromLine(p0: Coord, p2: Coord) Bezier {
         return .{
             .p0 = p0,
-            .p1 = (p0 + p2) / @as(Coord, @splat(2)),
+            .p1 = (p0 +% p2) / @as(Coord, @splat(2)),
             .p2 = p2,
         };
     }
